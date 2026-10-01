@@ -2,7 +2,7 @@
 build/
 **/build/
 *.cs3
-*.jar
+!gradle/wrapper/gradle-wrapper.jar
 local.properties
 .idea/
 *.iml

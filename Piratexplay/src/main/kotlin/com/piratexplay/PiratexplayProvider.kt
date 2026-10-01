@@ -52,9 +52,11 @@ class PiratexplayProvider : MainAPI() {
             ?: return null
 
         val href = fixUrlNull(this.selectFirst("a.lnk-blk")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("div.post-thumbnail img")?.let { img ->
-            img.attr("data-src").ifBlank { img.attr("src") }
-        })
+        val posterImg = this.selectFirst("div.post-thumbnail img")
+        val posterUrl = posterImg?.let { img ->
+            val src = img.attr("data-src")
+            fixUrlNull(if (src.isBlank()) img.attr("src") else src)
+        }
         val isMovie = href.contains("/movies/")
 
         return if (isMovie) {
@@ -83,9 +85,11 @@ class PiratexplayProvider : MainAPI() {
             ?: document.selectFirst("meta[property=og:title]")?.attr("content") 
             ?: "Unknown"
 
-        val poster = fixUrlNull(document.selectFirst("article.post.single img")?.let { img ->
-            img.attr("data-src").ifBlank { img.attr("src") }
-        })
+        val posterImg = document.selectFirst("article.post.single img")
+        val poster = posterImg?.let { img ->
+            val src = img.attr("data-src")
+            fixUrlNull(if (src.isBlank()) img.attr("src") else src)
+        }
 
         val description = document.selectFirst("div.description p")?.text()?.trim()
         val year = document.selectFirst("span.year span.overviewCss")?.text()?.trim()?.toIntOrNull()
@@ -116,9 +120,11 @@ class PiratexplayProvider : MainAPI() {
                     val epCode = epArticle.selectFirst("span.num-epi")?.text()?.trim()
                     val epNum = epCode?.substringAfter("x")?.toIntOrNull()
                     val epTitle = epArticle.selectFirst("h2.entry-title")?.text()?.trim() ?: "Episode $epNum"
-                    val epThumb = fixUrlNull(epArticle.selectFirst("img")?.let { img ->
-                        img.attr("data-src").ifBlank { img.attr("src") }
-                    })
+                    val epImg = epArticle.selectFirst("img")
+                    val epThumb = epImg?.let { img ->
+                        val src = img.attr("data-src")
+                        fixUrlNull(if (src.isBlank()) img.attr("src") else src)
+                    }
 
                     episodesList.add(
                         newEpisode(epHref) {
@@ -175,7 +181,7 @@ class PiratexplayProvider : MainAPI() {
             if (cleanUrl.contains("multi.php?data=")) {
                 val base64Data = cleanUrl.substringAfter("multi.php?data=")
                 try {
-                    val decodedJson = String(Base64.decode(base64Data, Base64.DEFAULT))
+                    val decodedJson = base64Decode(base64Data)
                     val audioList = tryParseJson<List<MultiAudioItem>>(decodedJson)
                     audioList?.forEach { item ->
                         val langPrefix = "[${item.language}]"
@@ -185,9 +191,17 @@ class PiratexplayProvider : MainAPI() {
                             subtitleCallback = subtitleCallback
                         ) { link ->
                             callback(
-                                link.copy(
-                                    name = "$langPrefix ${link.name}"
-                                )
+                                newExtractorLink(
+                                    source = link.source,
+                                    name = "$langPrefix ${link.name}",
+                                    url = link.url,
+                                    type = link.type
+                                ) {
+                                    this.referer = link.referer
+                                    this.quality = link.quality
+                                    this.headers = link.headers
+                                    this.extractorData = link.extractorData
+                                }
                             )
                         }
                     }
@@ -201,9 +215,17 @@ class PiratexplayProvider : MainAPI() {
                     subtitleCallback = subtitleCallback
                 ) { link ->
                     callback(
-                        link.copy(
-                            name = "[$serverName] ${link.name}"
-                        )
+                        newExtractorLink(
+                            source = link.source,
+                            name = "[$serverName] ${link.name}",
+                            url = link.url,
+                            type = link.type
+                        ) {
+                            this.referer = link.referer
+                            this.quality = link.quality
+                            this.headers = link.headers
+                            this.extractorData = link.extractorData
+                        }
                     )
                 }
             }

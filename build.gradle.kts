@@ -47,14 +47,14 @@ subprojects {
             minSdk = 21
         }
         compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_1_8
-            targetCompatibility = JavaVersion.VERSION_1_8
+            sourceCompatibility = JavaVersion.VERSION_11
+            targetCompatibility = JavaVersion.VERSION_11
         }
     }
 
     tasks.withType<KotlinJvmCompile>().configureEach {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_1_8)
+            jvmTarget.set(JvmTarget.JVM_11)
             freeCompilerArgs.addAll(
                 listOf(
                     "-Xno-call-assertions",
@@ -79,6 +79,7 @@ subprojects {
         implementation("com.squareup.okhttp3:okhttp:4.12.0")
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
         implementation("androidx.annotation:annotation:1.9.1")
+        implementation("org.jspecify:jspecify:1.0.0")
         implementation("org.mozilla:rhino:1.8.0")
         implementation("me.xdrop:fuzzywuzzy:1.4.0")
         implementation("com.google.code.gson:gson:2.11.0")

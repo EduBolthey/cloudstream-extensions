@@ -1,0 +1,86 @@
+name: Build Cloudstream Extensions
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - '*.md'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          path: "src"
+
+      - name: Checkout Builds Branch
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: "builds"
+          path: "builds"
+
+      - name: Clean Old Builds
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/builds
+          rm -f $GITHUB_WORKSPACE/builds/*.cs3 || true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Plugins
+        run: |
+          cd $GITHUB_WORKSPACE/src
+          chmod +x gradlew || true
+          ./gradlew make makePluginsJson
+          ./gradlew ensureJarCompatibility || true
+
+          # Copy generated artifacts to builds folder
+          mkdir -p $GITHUB_WORKSPACE/builds
+          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds/ || echo "No .cs3 files found"
+          cp **/build/*.jar $GITHUB_WORKSPACE/builds/ || echo "No .jar files found"
+          cp build/plugins.json $GITHUB_WORKSPACE/builds/ || echo "No plugins.json found"
+
+          # Generate or update repo.json
+          cat << 'EOF' > $GITHUB_WORKSPACE/builds/repo.json
+          {
+            "name": "Custom CloudStream Extensions",
+            "description": "Custom extensions for PirateXPlay, HDHub4u, and 4KHDHub",
+            "manifestVersion": 1,
+            "pluginLists": [
+              "https://raw.githubusercontent.com/${{ github.repository }}/builds/plugins.json"
+            ]
+          }
+          EOF
+
+      - name: Push Builds
+        run: |
+          cd $GITHUB_WORKSPACE/builds
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add -A
+
+          if [[ -n $(git status -s) ]]; then
+            git commit --amend -m "Build $GITHUB_SHA" || git commit -m "Build $GITHUB_SHA"
+            git push origin builds --force
+          else
+            echo "No changes to push"
+          fi

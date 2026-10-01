@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.jsoup.nodes.Element
-import android.util.Base64
+import kotlinx.coroutines.runBlocking
 
 class PiratexplayProvider : MainAPI() {
     override var mainUrl = "https://piratexplay.cc"
@@ -190,19 +190,21 @@ class PiratexplayProvider : MainAPI() {
                             referer = "$mainUrl/",
                             subtitleCallback = subtitleCallback
                         ) { link ->
-                            callback(
-                                newExtractorLink(
-                                    source = link.source,
-                                    name = "$langPrefix ${link.name}",
-                                    url = link.url,
-                                    type = link.type
-                                ) {
-                                    this.referer = link.referer
-                                    this.quality = link.quality
-                                    this.headers = link.headers
-                                    this.extractorData = link.extractorData
-                                }
-                            )
+                            runBlocking {
+                                callback(
+                                    newExtractorLink(
+                                        source = link.source,
+                                        name = "$langPrefix ${link.name}",
+                                        url = link.url,
+                                        type = link.type
+                                    ) {
+                                        this.referer = link.referer
+                                        this.quality = link.quality
+                                        this.headers = link.headers
+                                        this.extractorData = link.extractorData
+                                    }
+                                )
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -214,19 +216,21 @@ class PiratexplayProvider : MainAPI() {
                     referer = "$mainUrl/",
                     subtitleCallback = subtitleCallback
                 ) { link ->
-                    callback(
-                        newExtractorLink(
-                            source = link.source,
-                            name = "[$serverName] ${link.name}",
-                            url = link.url,
-                            type = link.type
-                        ) {
-                            this.referer = link.referer
-                            this.quality = link.quality
-                            this.headers = link.headers
-                            this.extractorData = link.extractorData
-                        }
-                    )
+                    runBlocking {
+                        callback(
+                            newExtractorLink(
+                                source = link.source,
+                                name = "[$serverName] ${link.name}",
+                                url = link.url,
+                                type = link.type
+                            ) {
+                                this.referer = link.referer
+                                this.quality = link.quality
+                                this.headers = link.headers
+                                this.extractorData = link.extractorData
+                            }
+                        )
+                    }
                 }
             }
         }

@@ -61,6 +61,10 @@ jobs:
           cp **/build/*.jar $GITHUB_WORKSPACE/builds/ || echo "No .jar files found"
           cp build/plugins.json $GITHUB_WORKSPACE/builds/ || echo "No plugins.json found"
 
+          # Copy Nuvio manifest and providers
+          cp manifest.json $GITHUB_WORKSPACE/builds/ || true
+          cp -r providers $GITHUB_WORKSPACE/builds/ || true
+
           # Generate repo.json
           cat << 'EOF' > $GITHUB_WORKSPACE/builds/repo.json
           {

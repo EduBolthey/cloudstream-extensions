@@ -42,7 +42,7 @@ async function getMediaInfo(id, mediaType) {
         }
       }
     } catch (e) {
-      console.log(`[PirateXPlay] Cinemeta resolution note: ${e.message}`);
+      console.log(`[PirateXPlay] Cinemeta error: ${e.message}`);
     }
   }
   try {
@@ -56,9 +56,24 @@ async function getMediaInfo(id, mediaType) {
       return { title: rawTitle, year: "", id };
     }
   } catch (e) {
-    console.log(`[PirateXPlay] PirateXPlay direct search note: ${e.message}`);
+    console.log(`[PirateXPlay] PirateXPlay direct search: ${e.message}`);
   }
   return { title: String(id), year: "", id };
+}
+async function extractVidmolyM3u8(embedUrl, refererUrl) {
+  try {
+    const res = await makeRequest(embedUrl, {
+      headers: { "Referer": refererUrl || `${BASE_URL}/` }
+    });
+    const html = await res.text();
+    const m = html.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+    if (m) {
+      return m[1];
+    }
+  } catch (e) {
+    console.log(`[PirateXPlay] Vidmoly extraction error: ${e.message}`);
+  }
+  return null;
 }
 async function getStreams(id, mediaType = "tv", season = 1, episode = 1) {
   console.log(`[PirateXPlay] Request: ID=${id}, type=${mediaType}, S${season}E${episode}`);
@@ -140,13 +155,45 @@ async function getStreams(id, mediaType = "tv", season = 1, episode = 1) {
     console.log(`[PirateXPlay] Fetching player page: ${episodePageUrl}`);
     const epPageRes = await makeRequest(episodePageUrl);
     const epPageHtml = await epPageRes.text();
-    const iframes = [...epPageHtml.matchAll(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi)].map((m) => m[1]);
-    console.log(`[PirateXPlay] Found ${iframes.length} iframes`);
-    const streams = [];
+    const serverMap = {};
+    const buttonMatches = [...epPageHtml.matchAll(/<a[^>]+href=["']#options-(\d+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+    for (const b of buttonMatches) {
+      const optId = b[1];
+      const bContent = b[2];
+      const sNumMatch = bContent.match(/Server\s*<span>(\d+)<\/span>/i);
+      const sNum2 = sNumMatch ? sNumMatch[1] : optId;
+      const labelMatch = bContent.match(/<span class="server">([^<]+)<\/span>/i);
+      const label = labelMatch ? labelMatch[1].trim() : `Server ${sNum2}`;
+      serverMap[optId] = { num: sNum2, label };
+    }
+    const optionDivs = [...epPageHtml.matchAll(/<div\s+id=["']options-(\d+)["'][^>]*>([\s\S]*?)<\/div>\s*(?=<div\s+id=["']options|\s*<div\s+class=["']clear|<footer|$)/gi)];
     const displayTitle = mediaType === "tv" ? `${info.title} S${String(sNum).padStart(2, "0")}E${String(eNum).padStart(2, "0")}` : `${info.title}`;
-    for (let i = 0; i < iframes.length; i++) {
-      let iframeUrl = iframes[i];
+    const directStreams = [];
+    const otherStreams = [];
+    for (const div of optionDivs) {
+      const optId = div[1];
+      const divContent = div[2];
+      const meta = serverMap[optId] || { num: optId, label: `Server ${optId}` };
+      const ifMatch = divContent.match(/(?:src|data-src)=["']([^"']+)["']/i);
+      if (!ifMatch) continue;
+      let iframeUrl = ifMatch[1];
       if (iframeUrl.startsWith("//")) iframeUrl = "https:" + iframeUrl;
+      if (iframeUrl.includes("vidmoly.")) {
+        const directM3u8 = await extractVidmolyM3u8(iframeUrl, episodePageUrl);
+        if (directM3u8) {
+          directStreams.push({
+            name: `PirateXPlay [Server ${meta.num}] ${meta.label} [Playable HLS]`,
+            title: displayTitle,
+            url: directM3u8,
+            quality: "1080p",
+            headers: {
+              "User-Agent": HEADERS["User-Agent"]
+            },
+            provider: "piratexplay"
+          });
+          continue;
+        }
+      }
       if (iframeUrl.includes("multi.php?data=")) {
         try {
           const b64 = iframeUrl.split("multi.php?data=")[1].split("&")[0];
@@ -156,8 +203,23 @@ async function getStreams(id, mediaType = "tv", season = 1, episode = 1) {
             if (Array.isArray(parsed)) {
               for (const audio of parsed) {
                 if (audio.link) {
-                  streams.push({
-                    name: `PirateXPlay [${audio.language || "Multi"}]`,
+                  if (audio.link.includes("short.icu")) continue;
+                  if (audio.link.includes("vidmoly.")) {
+                    const multiM3u8 = await extractVidmolyM3u8(audio.link, episodePageUrl);
+                    if (multiM3u8) {
+                      directStreams.push({
+                        name: `PirateXPlay [Server ${meta.num}] ${meta.label} [${audio.language || "Multi"}] [HLS]`,
+                        title: displayTitle,
+                        url: multiM3u8,
+                        quality: "1080p",
+                        headers: { "User-Agent": HEADERS["User-Agent"] },
+                        provider: "piratexplay"
+                      });
+                      continue;
+                    }
+                  }
+                  otherStreams.push({
+                    name: `PirateXPlay [Server ${meta.num}] ${meta.label} [${audio.language || "Multi"}]`,
                     title: displayTitle,
                     url: audio.link,
                     quality: "1080p",
@@ -174,88 +236,26 @@ async function getStreams(id, mediaType = "tv", season = 1, episode = 1) {
         } catch (e) {
           console.log(`[PirateXPlay] Multi-audio error: ${e.message}`);
         }
-      } else if (iframeUrl.includes("vidmoly.biz") || iframeUrl.includes("vidmoly.me")) {
-        try {
-          const vRes = await makeRequest(iframeUrl, { headers: { "Referer": episodePageUrl } });
-          const vHtml = await vRes.text();
-          const m3u8Match = vHtml.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
-          if (m3u8Match) {
-            streams.push({
-              name: `PirateXPlay VidMoly HLS`,
-              title: displayTitle,
-              url: m3u8Match[1],
-              quality: "1080p",
-              headers: {
-                "Referer": "https://vidmoly.biz/",
-                "User-Agent": HEADERS["User-Agent"]
-              },
-              provider: "piratexplay"
-            });
-          } else {
-            streams.push({
-              name: `PirateXPlay VidMoly`,
-              title: displayTitle,
-              url: iframeUrl,
-              quality: "1080p",
-              headers: { "Referer": `${BASE_URL}/` },
-              provider: "piratexplay"
-            });
-          }
-        } catch (e) {
-          streams.push({
-            name: `PirateXPlay VidMoly`,
-            title: displayTitle,
-            url: iframeUrl,
-            quality: "1080p",
-            headers: { "Referer": `${BASE_URL}/` },
-            provider: "piratexplay"
-          });
-        }
-      } else if (iframeUrl.includes("abyssplayer.com")) {
-        streams.push({
-          name: `PirateXPlay Abyss HD`,
-          title: displayTitle,
-          url: iframeUrl,
-          quality: "1080p",
-          headers: {
-            "Referer": `${BASE_URL}/`,
-            "User-Agent": HEADERS["User-Agent"]
-          },
-          provider: "piratexplay"
-        });
-      } else if (iframeUrl.includes("as-cdn") || iframeUrl.includes("vexal.top") || iframeUrl.includes("animedekho")) {
-        streams.push({
-          name: `PirateXPlay AnimeSalt HD`,
-          title: displayTitle,
-          url: iframeUrl,
-          quality: "1080p",
-          headers: {
-            "Referer": `${BASE_URL}/`,
-            "User-Agent": HEADERS["User-Agent"]
-          },
-          provider: "piratexplay"
-        });
-      } else if (!iframeUrl.includes("ads") && !iframeUrl.includes("googletagmanager")) {
-        let serverName = "Server";
-        try {
-          serverName = new URL(iframeUrl).hostname.replace("www.", "");
-        } catch (_) {
-        }
-        streams.push({
-          name: `PirateXPlay ${serverName}`,
-          title: displayTitle,
-          url: iframeUrl,
-          quality: "1080p",
-          headers: {
-            "Referer": `${BASE_URL}/`,
-            "User-Agent": HEADERS["User-Agent"]
-          },
-          provider: "piratexplay"
-        });
+        continue;
       }
+      if (iframeUrl.includes("short.icu") || iframeUrl.includes("gdmirrorbot.nl") || iframeUrl.includes("turbovidhls.com")) {
+        continue;
+      }
+      otherStreams.push({
+        name: `PirateXPlay [Server ${meta.num}] ${meta.label}`,
+        title: displayTitle,
+        url: iframeUrl,
+        quality: "1080p",
+        headers: {
+          "Referer": `${BASE_URL}/`,
+          "User-Agent": HEADERS["User-Agent"]
+        },
+        provider: "piratexplay"
+      });
     }
-    console.log(`[PirateXPlay] Returning ${streams.length} streams!`);
-    return streams;
+    const allStreams = [...directStreams, ...otherStreams];
+    console.log(`[PirateXPlay] Returning ${allStreams.length} streams (${directStreams.length} direct HLS)!`);
+    return allStreams;
   } catch (error) {
     console.error(`[PirateXPlay] Error:`, error.message);
     return [];

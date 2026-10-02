@@ -1,6 +1,5 @@
-// PirateXPlay Nuvio Enhanced Provider v1.0.6
-// Maximum compatibility with Android WebView, React Native Hermes, Node.js, and QuickJS.
-// Supports Cinemeta IMDb IDs (tt...), TMDB IDs, Stremio colon-IDs (tt...:1:1), and object args.
+// PirateXPlay Nuvio Enhanced Provider v1.0.7
+// Direct HLS (.m3u8) extractor with unblocked TMDB Web & TVMaze metadata resolvers.
 
 var BASE_URL = "https://piratexplay.cc";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -9,9 +8,7 @@ var HEADERS = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Referer": BASE_URL + "/"
 };
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 
-// ── Compatibility Helper: regex match all without ES2020 matchAll ───────────
 function matchAllRegex(str, regex) {
   var results = [];
   if (!str) return results;
@@ -19,9 +16,7 @@ function matchAllRegex(str, regex) {
   if (flags.indexOf("g") === -1) flags += "g";
   var r = new RegExp(regex.source, flags);
   var m;
-  while ((m = r.exec(str)) !== null) {
-    results.push(m);
-  }
+  while ((m = r.exec(str)) !== null) results.push(m);
   return results;
 }
 
@@ -34,22 +29,17 @@ function base64Decode(str) {
 }
 
 async function fetchHtml(url, referer, timeoutMs) {
-  timeoutMs = timeoutMs || 3500;
+  timeoutMs = timeoutMs || 4000;
   return new Promise(function(resolve) {
-    var timer = setTimeout(function() {
-      resolve(null);
-    }, timeoutMs);
+    var timer = setTimeout(function() { resolve(null); }, timeoutMs);
     try {
       var opts = {
-        headers: Object.assign({}, HEADERS, referer ? { "Referer": referer } : {}),
-        redirect: "follow"
+        headers: Object.assign({}, HEADERS, referer ? { "Referer": referer } : {})
       };
       fetch(url, opts).then(function(res) {
         clearTimeout(timer);
         if (!res.ok) return resolve(null);
-        return res.text().then(function(text) {
-          resolve(text);
-        }).catch(function() { resolve(null); });
+        return res.text().then(function(text) { resolve(text); }).catch(function() { resolve(null); });
       }).catch(function() {
         clearTimeout(timer);
         resolve(null);
@@ -61,41 +51,33 @@ async function fetchHtml(url, referer, timeoutMs) {
   });
 }
 
-// ── Extract direct .m3u8 or .mp4 URL from a page ──────────────────────────
 function extractPlayerUrl(html) {
   if (!html) return null;
-  // jwplayer sources array: sources: [{file: "https://...m3u8..."}]
   var m = html.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*['"]([^'"]+)['"]/i);
   if (m && (m[1].includes(".m3u8") || m[1].includes(".mp4"))) return m[1];
 
-  // single file assignment: file: "https://...m3u8..."
   m = html.match(/['"]?file['":\s]+['"]?(https?:\/\/[^\s'"<>]+\.m3u8[^\s'"<>]*)/i);
   if (m) return m[1];
 
-  // direct m3u8 in HTML
   m = html.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
   if (m) return m[1];
 
-  // direct mp4 in HTML
   m = html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
   if (m) return m[1];
 
   return null;
 }
 
-// ── Extract Vidmoly embed → gets signed master.m3u8 directly from page ─────
 async function extractVidmoly(embedUrl, referer) {
   var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
   return extractPlayerUrl(html);
 }
 
-// ── Extract Vexal / As-cdn26 embed → m3u8 ─────────────────────────────────
 async function extractVexal(embedUrl, referer) {
   var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
   return extractPlayerUrl(html);
 }
 
-// ── Extract Animedekho embed → finds inner iframe → m3u8 ─────────────────
 async function extractAnimedekho(embedUrl) {
   var html = await fetchHtml(embedUrl, BASE_URL + "/");
   if (!html) return null;
@@ -104,7 +86,6 @@ async function extractAnimedekho(embedUrl) {
   return await extractVexal(m[1], embedUrl);
 }
 
-// ── Stream object factory (compatible with Nuvio Enhanced & Stremio) ───────
 function createStreamObj(name, title, streamUrl, referer) {
   var streamHeaders = {
     "User-Agent": UA,
@@ -118,15 +99,12 @@ function createStreamObj(name, title, streamUrl, referer) {
     headers: streamHeaders,
     behaviorHints: {
       notWebReady: false,
-      proxyHeaders: {
-        request: streamHeaders
-      }
+      proxyHeaders: { request: streamHeaders }
     },
-    provider: "piratexplay"
+    subtitles: []
   };
 }
 
-// ── Extract from index11.php internal player ──────────────────────────────
 async function extractIndex11(proxyUrl, displayTitle) {
   var html = await fetchHtml(proxyUrl, BASE_URL + "/");
   if (!html) return [];
@@ -151,7 +129,6 @@ async function extractIndex11(proxyUrl, displayTitle) {
   return streams;
 }
 
-// ── Resolve multi.php (base64 JSON of language links) ─────────────────────
 async function extractMulti(iframeUrl, referer, displayTitle) {
   var parts = iframeUrl.split("multi.php?data=");
   if (parts.length < 2) return [];
@@ -169,7 +146,7 @@ async function extractMulti(iframeUrl, referer, displayTitle) {
     var lang = item.language || "Multi";
     var link = item.link;
     try {
-      var r = await fetch(link, { headers: HEADERS, redirect: "follow" });
+      var r = await fetch(link, { headers: HEADERS });
       var finalUrl = r.url;
       if (finalUrl.includes("vidmoly.")) {
         var m3u8 = await extractVidmoly(finalUrl, referer);
@@ -187,7 +164,6 @@ async function extractMulti(iframeUrl, referer, displayTitle) {
   return streams;
 }
 
-// ── Process a single server option container ──────────────────────────────
 async function processServerDiv(div, serverMap, epUrl, displayTitle) {
   var optId = div[1];
   var divHtml = div[2];
@@ -231,7 +207,7 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
         return streams;
       }
     }
-    var genHtml = await fetchHtml(iurl, epUrl);
+    var genHtml = await fetchHtml(iurl, epUrl, 3000);
     var genM3u8 = extractPlayerUrl(genHtml);
     if (genM3u8 && (genM3u8.includes(".m3u8") || genM3u8.includes(".mp4"))) {
       streams.push(createStreamObj(sname, displayTitle, genM3u8, iurl));
@@ -242,9 +218,8 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
   return streams;
 }
 
-// ── Main stream extraction from episode page ───────────────────────────────
 async function extractStreams(epUrl, displayTitle) {
-  var html = await fetchHtml(epUrl, null);
+  var html = await fetchHtml(epUrl, null, 5000);
   if (!html) return [];
 
   var serverMap = {};
@@ -260,8 +235,6 @@ async function extractStreams(epUrl, displayTitle) {
   }
 
   var divMatches = matchAllRegex(html, /<div\s+id="options-(\d+)"[^>]*class="video\s+aa-tb[^"]*"[^>]*>([\s\S]*?)<\/div>/gi);
-
-  // Parallel execution safe across all JS runtimes
   var tasks = divMatches.map(function(div) {
     return processServerDiv(div, serverMap, epUrl, displayTitle).catch(function() { return []; });
   });
@@ -275,7 +248,6 @@ async function extractStreams(epUrl, displayTitle) {
       }
     }
   }
-
   return verifiedStreams;
 }
 
@@ -294,50 +266,49 @@ function scoreSlugMatch(slug, searchWords) {
   return matches / Math.max(searchWords.length, 1);
 }
 
-// ── Media info resolver (Cinemeta + TMDB fallback) ─────────────────────────
+// ── Media info resolver (TMDB Website Scrape + TVMaze + Cinemeta) ──────────
 async function getMediaInfo(rawId, mediaType) {
   var id = String(rawId || "").split(":")[0].trim();
   var isSeries = mediaType === "tv" || mediaType === "series";
 
-  // 1. Cinemeta lookup for IMDb IDs (tt...)
-  if (id.startsWith("tt")) {
+  // 1. Numeric TMDB ID -> scrape www.themoviedb.org (bypasses ISP api block)
+  if (/^\d+$/.test(id)) {
     try {
-      var ctype = isSeries ? "series" : "movie";
-      var cres = await fetch("https://v3-cinemeta.strem.io/meta/" + ctype + "/" + id + ".json");
-      if (cres.ok) {
-        var cd = await cres.json();
-        if (cd && cd.meta && cd.meta.name) {
-          var year = String(cd.meta.year || "").slice(0, 4);
-          return { title: cd.meta.name, year: year, id: id };
+      var endpoint = isSeries ? "tv" : "movie";
+      var url = "https://www.themoviedb.org/" + endpoint + "/" + id;
+      var html = await fetchHtml(url, null, 3000);
+      if (html) {
+        var og = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
+        if (og && og[1]) {
+          var title = og[1].replace(/\s*\(\d{4}\)$/, "").trim();
+          var yr = html.match(/\((\d{4})\)/);
+          return { title: title, year: yr ? yr[1] : "", id: id };
         }
       }
     } catch(e) {}
+  }
 
-    // TVMaze fallback for TV shows
+  // 2. IMDb ID (tt...) -> TVMaze / Cinemeta
+  if (id.startsWith("tt")) {
     if (isSeries) {
       try {
         var mres = await fetch("https://api.tvmaze.com/lookup/shows?imdb=" + id);
         if (mres.ok) {
           var md = await mres.json();
           if (md && md.name) {
-            var myear = String(md.premiered || "").slice(0, 4);
-            return { title: md.name, year: myear, id: id };
+            return { title: md.name, year: String(md.premiered || "").slice(0, 4), id: id };
           }
         }
       } catch(e) {}
     }
-  }
-
-  // 2. TMDB API lookup for numeric IDs
-  if (/^\d+$/.test(id)) {
     try {
-      var endpoint = isSeries ? "tv" : "movie";
-      var res = await fetch("https://api.themoviedb.org/3/" + endpoint + "/" + id + "?api_key=" + TMDB_API_KEY);
-      if (res.ok) {
-        var d = await res.json();
-        var title = d.name || d.title || "";
-        var year = String(d.first_air_date || d.release_date || "").slice(0, 4);
-        if (title) return { title: title, year: year, id: id };
+      var ctype = isSeries ? "series" : "movie";
+      var cres = await fetch("https://v3-cinemeta.strem.io/meta/" + ctype + "/" + id + ".json");
+      if (cres.ok) {
+        var cd = await cres.json();
+        if (cd && cd.meta && cd.meta.name) {
+          return { title: cd.meta.name, year: String(cd.meta.year || "").slice(0, 4), id: id };
+        }
       }
     } catch(e) {}
   }
@@ -347,15 +318,24 @@ async function getMediaInfo(rawId, mediaType) {
 
 // ── Find episode page URL ──────────────────────────────────────────────────
 async function findEpisodeUrl(id, mediaType, info, sNum, eNum) {
-  // 1. If numeric TMDB ID, search directly on site
+  var isSeries = mediaType === "tv" || mediaType === "series";
+
+  // 1. Direct search by numeric ID on piratexplay
   if (/^\d+$/.test(String(info.id))) {
     var searchHtml = await fetchHtml(BASE_URL + "/?s=" + info.id);
     if (searchHtml) {
-      var sPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/series\\/[^"\']*-season-' + sNum + '[^"\']*-' + info.id + '\\/?)["\']', "i");
-      var sm = searchHtml.match(sPat);
-      if (sm) {
-        var slug = sm[1].replace(/\/$/, "").split("/").pop();
-        return BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum + "/";
+      if (isSeries) {
+        var sPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/series\\/[^"\']*-' + info.id + '\\/?)["\']', "i");
+        var sm = searchHtml.match(sPat);
+        if (sm) {
+          var baseSlug = sm[1].replace(/\/$/, "").split("/").pop();
+          var adjSlug = baseSlug.replace(/season-\d+/i, "season-" + sNum);
+          return BASE_URL + "/episode/" + adjSlug + "-" + sNum + "x" + eNum + "/";
+        }
+      } else {
+        var mPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/movies\\/[^"\']*-' + info.id + '\\/?)["\']', "i");
+        var mm = searchHtml.match(mPat);
+        if (mm) return BASE_URL + mm[1];
       }
     }
   }
@@ -386,7 +366,7 @@ async function findEpisodeUrl(id, mediaType, info, sNum, eNum) {
       }
 
       if (best && bestScore >= 0.25) {
-        if (mediaType === "movie") return BASE_URL + best;
+        if (!isSeries || best.indexOf("/movies/") !== -1) return BASE_URL + best;
         var baseSlug = best.replace(/\/$/, "").split("/").pop();
         var adjSlug = baseSlug.replace(/season-\d+/i, "season-" + sNum);
         return BASE_URL + "/episode/" + adjSlug + "-" + sNum + "x" + eNum + "/";
@@ -399,7 +379,6 @@ async function findEpisodeUrl(id, mediaType, info, sNum, eNum) {
 
 // ── Main entry point ───────────────────────────────────────────────────────
 async function getStreams(id, mediaType, season, episode) {
-  // Support object arguments
   if (typeof id === "object" && id !== null) {
     var obj = id;
     id = obj.id || obj.tmdbId || obj.imdbId;
@@ -407,8 +386,6 @@ async function getStreams(id, mediaType, season, episode) {
     if (obj.season !== undefined) season = obj.season;
     if (obj.episode !== undefined) episode = obj.episode;
   }
-
-  // Support colon IDs e.g. "tt1622696:1:1" or "31109:1:1"
   if (typeof id === "string" && id.indexOf(":") !== -1) {
     var parts = id.split(":");
     id = parts[0];
@@ -421,27 +398,17 @@ async function getStreams(id, mediaType, season, episode) {
   var sNum = parseInt(season) || 1;
   var eNum = parseInt(episode) || 1;
 
-  console.log("[PX] Query: id=" + id + " type=" + mediaType + " S" + sNum + "E" + eNum);
   try {
     var info = await getMediaInfo(id, mediaType);
-    console.log("[PX] Resolved Info:", info.title, "(" + info.year + ")");
-
-    var displayTitle = mediaType === "tv" || mediaType === "series"
+    var displayTitle = (mediaType === "tv" || mediaType === "series")
       ? (info.title + " S" + String(sNum).padStart(2, "0") + "E" + String(eNum).padStart(2, "0"))
       : info.title;
 
     var epUrl = await findEpisodeUrl(id, mediaType, info, sNum, eNum);
-    if (!epUrl) {
-      console.log("[PX] No episode page found for:", info.title);
-      return [];
-    }
+    if (!epUrl) return [];
 
-    console.log("[PX] Episode URL:", epUrl);
-    var streams = await extractStreams(epUrl, displayTitle);
-    console.log("[PX] Verified Streams Found:", streams.length);
-    return streams;
+    return await extractStreams(epUrl, displayTitle);
   } catch(e) {
-    console.error("[PX] Scraper error:", e.message);
     return [];
   }
 }

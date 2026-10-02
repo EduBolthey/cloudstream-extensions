@@ -1,6 +1,6 @@
 {
   "name": "EduBolthey Repo",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Custom extensions for PirateXPlay, HDHub4u, and 4KHDHub",
   "author": "EduBolthey",
   "scrapers": [
@@ -8,8 +8,8 @@
       "id": "piratexplay",
       "name": "PirateXPlay",
       "description": "Multi-Audio Anime, Cartoons & Series (Hindi/English/Japanese)",
-      "version": "1.0.6",
-      "filename": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/master/providers/piratexplay.js",
+      "version": "1.0.7",
+      "filename": "providers/piratexplay.js",
       "supportedTypes": [
         "movie",
         "tv"
@@ -26,7 +26,7 @@
       "name": "HDHub4u",
       "description": "Bollywood, Hollywood & Dubbed Movies & Series",
       "version": "1.0.0",
-      "filename": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/master/providers/hdhub4u.js",
+      "filename": "providers/hdhub4u.js",
       "supportedTypes": [
         "movie",
         "tv"
@@ -42,7 +42,7 @@
       "name": "4KHDHub",
       "description": "4K UHD 2160p Movies & TV Series",
       "version": "1.0.0",
-      "filename": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/master/providers/4khdhub.js",
+      "filename": "providers/4khdhub.js",
       "supportedTypes": [
         "movie",
         "tv"

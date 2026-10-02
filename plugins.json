@@ -46,10 +46,10 @@
     },
     {
         "iconUrl": "https://piratexplay.cc/favicon.ico",
-        "fileHash": "sha256-b7ade43e27b3664cdcc342233736fea1a5c1408aa1abfcfc3e69425ed6d50024",
+        "fileHash": "sha256-c483f3dcdc4e723e732710e763fd096b4d8a6c6e4be813b80e18c124cb01039c",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/EduBolthey/cloudstream-extensions",
-        "fileSize": 21949,
+        "fileSize": 26795,
         "status": 1,
         "language": "hi",
         "authors": [

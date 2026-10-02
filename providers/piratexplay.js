@@ -1,13 +1,8 @@
-// PirateXPlay Nuvio Enhanced Provider v1.0.7
-// Direct HLS (.m3u8) extractor with unblocked TMDB Web & TVMaze metadata resolvers.
+// PirateXPlay Nuvio Enhanced Provider v1.0.8
+// Direct HLS (.m3u8) extractor - pure QuickJS compatible (no setTimeout/clearTimeout), skips dead/hanging domains
 
 var BASE_URL = "https://piratexplay.cc";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var HEADERS = {
-  "User-Agent": UA,
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Referer": BASE_URL + "/"
-};
 
 function matchAllRegex(str, regex) {
   var results = [];
@@ -22,33 +17,27 @@ function matchAllRegex(str, regex) {
 
 function base64Decode(str) {
   try {
-    return typeof atob === "function" ? atob(str) : Buffer.from(str, "base64").toString("utf-8");
+    if (typeof atob === "function") return atob(str);
+    if (typeof Buffer !== "undefined") return Buffer.from(str, "base64").toString("utf-8");
+    return null;
   } catch(e) {
     return null;
   }
 }
 
-async function fetchHtml(url, referer, timeoutMs) {
-  timeoutMs = timeoutMs || 4000;
-  return new Promise(function(resolve) {
-    var timer = setTimeout(function() { resolve(null); }, timeoutMs);
-    try {
-      var opts = {
-        headers: Object.assign({}, HEADERS, referer ? { "Referer": referer } : {})
-      };
-      fetch(url, opts).then(function(res) {
-        clearTimeout(timer);
-        if (!res.ok) return resolve(null);
-        return res.text().then(function(text) { resolve(text); }).catch(function() { resolve(null); });
-      }).catch(function() {
-        clearTimeout(timer);
-        resolve(null);
-      });
-    } catch(e) {
-      clearTimeout(timer);
-      resolve(null);
-    }
-  });
+async function fetchHtml(url, referer) {
+  try {
+    var hdrs = {
+      "User-Agent": UA,
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Referer": referer || (BASE_URL + "/")
+    };
+    var res = await fetch(url, { headers: hdrs });
+    if (!res || !res.ok) return null;
+    return await res.text();
+  } catch(e) {
+    return null;
+  }
 }
 
 function extractPlayerUrl(html) {
@@ -73,27 +62,14 @@ async function extractVidmoly(embedUrl, referer) {
   return extractPlayerUrl(html);
 }
 
-async function extractVexal(embedUrl, referer) {
-  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
-  return extractPlayerUrl(html);
-}
-
-async function extractAnimedekho(embedUrl) {
-  var html = await fetchHtml(embedUrl, BASE_URL + "/");
-  if (!html) return null;
-  var m = html.match(/<iframe[^>]+src=["'](https?:\/\/(?:vexal\.top|as-cdn26\.top)[^"']+)["']/i);
-  if (!m) return null;
-  return await extractVexal(m[1], embedUrl);
-}
-
 function createStreamObj(name, title, streamUrl, referer) {
   var streamHeaders = {
     "User-Agent": UA,
-    "Referer": referer || (streamUrl.includes("vidmoly.") || streamUrl.includes("vmpx.online") ? "https://vidmoly.biz/" : BASE_URL + "/")
+    "Referer": referer || "https://vidmoly.biz/"
   };
   return {
-    name: name,
-    title: title,
+    name: name || "PirateXPlay",
+    title: title || "PirateXPlay 1080p",
     url: streamUrl,
     quality: "1080p",
     headers: streamHeaders,
@@ -105,121 +81,26 @@ function createStreamObj(name, title, streamUrl, referer) {
   };
 }
 
-async function extractIndex11(proxyUrl, displayTitle) {
-  var html = await fetchHtml(proxyUrl, BASE_URL + "/");
-  if (!html) return [];
-  var streams = [];
-  var primary = html.match(/<iframe[^>]+id=["']playerFrame["'][^>]+src=["']([^"']+)["']/i);
-  if (primary) {
-    var pUrl = primary[1];
-    var m3u8 = await extractVexal(pUrl, proxyUrl);
-    if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
-      streams.push(createStreamObj("PirateXPlay [HD] FM", displayTitle, m3u8, proxyUrl));
-    }
+// Dead or slow domains to ignore completely so we don't hang Nuvio's 30s timeout
+var BLOCKED_DOMAINS = [
+  "rubystm.com",
+  "short.icu",
+  "as-cdn26.top",
+  "gdmirrorbot.nl",
+  "turbovidhls.com",
+  "strmup.to"
+];
+
+function isBlocked(url) {
+  var lower = (url || "").toLowerCase();
+  for (var i = 0; i < BLOCKED_DOMAINS.length; i++) {
+    if (lower.indexOf(BLOCKED_DOMAINS[i]) !== -1) return true;
   }
-  var opts = matchAllRegex(html, /data-link=["']([^"']+)["'][^>]*data-language=["']([^"']+)["']/gi);
-  for (var i = 0; i < opts.length; i++) {
-    var link = opts[i][1]; var lang = opts[i][2] || "HD";
-    if (!link || link === (primary && primary[1])) continue;
-    var optM3u8 = link.includes("vidmoly.") ? await extractVidmoly(link, proxyUrl) : await extractVexal(link, proxyUrl);
-    if (optM3u8 && (optM3u8.includes(".m3u8") || optM3u8.includes(".mp4"))) {
-      streams.push(createStreamObj("PirateXPlay [HD] " + lang, displayTitle, optM3u8, proxyUrl));
-    }
-  }
-  return streams;
-}
-
-async function extractMulti(iframeUrl, referer, displayTitle) {
-  var parts = iframeUrl.split("multi.php?data=");
-  if (parts.length < 2) return [];
-  var b64 = parts[1].split("&")[0];
-  var decoded = base64Decode(b64);
-  if (!decoded) return [];
-  var parsed;
-  try { parsed = JSON.parse(decoded); } catch(e) { return []; }
-  if (!Array.isArray(parsed)) return [];
-
-  var streams = [];
-  for (var i = 0; i < parsed.length; i++) {
-    var item = parsed[i];
-    if (!item || !item.link) continue;
-    var lang = item.language || "Multi";
-    var link = item.link;
-    try {
-      var r = await fetch(link, { headers: HEADERS });
-      var finalUrl = r.url;
-      if (finalUrl.includes("vidmoly.")) {
-        var m3u8 = await extractVidmoly(finalUrl, referer);
-        if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
-          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, m3u8, "https://vidmoly.biz/"));
-        }
-      } else if (finalUrl.includes("vexal.top") || finalUrl.includes("as-cdn26.top")) {
-        var vM3u8 = await extractVexal(finalUrl, referer);
-        if (vM3u8 && (vM3u8.includes(".m3u8") || vM3u8.includes(".mp4"))) {
-          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, vM3u8, finalUrl));
-        }
-      }
-    } catch(e) {}
-  }
-  return streams;
-}
-
-async function processServerDiv(div, serverMap, epUrl, displayTitle) {
-  var optId = div[1];
-  var divHtml = div[2];
-  var meta = serverMap[optId] || { num: optId, label: "Server " + (parseInt(optId) + 1) };
-  var sname = "PirateXPlay [Server " + meta.num + "] " + meta.label;
-
-  var srcM = divHtml.match(/\biframe\b[^>]+\bsrc=["']([^"']+)["']/i)
-          || divHtml.match(/\biframe\b[^>]+\bdata-src=["']([^"']+)["']/i);
-  if (!srcM) return [];
-
-  var iurl = srcM[1].trim();
-  if (iurl.startsWith("//")) iurl = "https:" + iurl;
-  if (!iurl.startsWith("http")) return [];
-
-  var streams = [];
-  try {
-    if (iurl.includes("multi.php?data=")) {
-      return await extractMulti(iurl, epUrl, displayTitle);
-    }
-    if (iurl.includes("/public/player/")) {
-      return await extractIndex11(iurl, displayTitle);
-    }
-    if (iurl.includes("vidmoly.")) {
-      var vm3u8 = await extractVidmoly(iurl, epUrl);
-      if (vm3u8 && (vm3u8.includes(".m3u8") || vm3u8.includes(".mp4"))) {
-        streams.push(createStreamObj(sname, displayTitle, vm3u8, "https://vidmoly.biz/"));
-        return streams;
-      }
-    }
-    if (iurl.includes("animedekho.piratexplay.com")) {
-      var am3u8 = await extractAnimedekho(iurl);
-      if (am3u8 && (am3u8.includes(".m3u8") || am3u8.includes(".mp4"))) {
-        streams.push(createStreamObj(sname, displayTitle, am3u8, iurl));
-        return streams;
-      }
-    }
-    if (iurl.includes("vexal.top") || iurl.includes("as-cdn26.top")) {
-      var xm3u8 = await extractVexal(iurl, epUrl);
-      if (xm3u8 && (xm3u8.includes(".m3u8") || xm3u8.includes(".mp4"))) {
-        streams.push(createStreamObj(sname, displayTitle, xm3u8, iurl));
-        return streams;
-      }
-    }
-    var genHtml = await fetchHtml(iurl, epUrl, 3000);
-    var genM3u8 = extractPlayerUrl(genHtml);
-    if (genM3u8 && (genM3u8.includes(".m3u8") || genM3u8.includes(".mp4"))) {
-      streams.push(createStreamObj(sname, displayTitle, genM3u8, iurl));
-      return streams;
-    }
-  } catch(e) {}
-
-  return streams;
+  return false;
 }
 
 async function extractStreams(epUrl, displayTitle) {
-  var html = await fetchHtml(epUrl, null, 5000);
+  var html = await fetchHtml(epUrl, null);
   if (!html) return [];
 
   var serverMap = {};
@@ -235,19 +116,43 @@ async function extractStreams(epUrl, displayTitle) {
   }
 
   var divMatches = matchAllRegex(html, /<div\s+id="options-(\d+)"[^>]*class="video\s+aa-tb[^"]*"[^>]*>([\s\S]*?)<\/div>/gi);
-  var tasks = divMatches.map(function(div) {
-    return processServerDiv(div, serverMap, epUrl, displayTitle).catch(function() { return []; });
+  
+  // Prioritize Vidmoly servers first
+  divMatches.sort(function(a, b) {
+    var aHasVid = a[2].toLowerCase().indexOf("vidmoly") !== -1 ? 0 : 1;
+    var bHasVid = b[2].toLowerCase().indexOf("vidmoly") !== -1 ? 0 : 1;
+    return aHasVid - bHasVid;
   });
-  var results = await Promise.all(tasks);
 
   var verifiedStreams = [];
-  for (var j = 0; j < results.length; j++) {
-    if (Array.isArray(results[j])) {
-      for (var k = 0; k < results[j].length; k++) {
-        verifiedStreams.push(results[j][k]);
+  for (var j = 0; j < divMatches.length; j++) {
+    var div = divMatches[j];
+    var optId = div[1];
+    var divHtml = div[2];
+    var meta = serverMap[optId] || { num: optId, label: "Server " + (parseInt(optId) + 1) };
+    var sname = "PirateXPlay [Server " + meta.num + "] " + meta.label;
+
+    var srcM = divHtml.match(/\biframe\b[^>]+\bsrc=["']([^"']+)["']/i)
+            || divHtml.match(/\biframe\b[^>]+\bdata-src=["']([^"']+)["']/i);
+    if (!srcM) continue;
+
+    var iurl = srcM[1].trim();
+    if (iurl.startsWith("//")) iurl = "https:" + iurl;
+    if (!iurl.startsWith("http")) continue;
+
+    if (isBlocked(iurl)) continue;
+
+    try {
+      if (iurl.includes("vidmoly.")) {
+        var vm3u8 = await extractVidmoly(iurl, epUrl);
+        if (vm3u8 && (vm3u8.includes(".m3u8") || vm3u8.includes(".mp4"))) {
+          verifiedStreams.push(createStreamObj(sname, displayTitle, vm3u8, "https://vidmoly.biz/"));
+          if (verifiedStreams.length >= 2) break;
+        }
       }
-    }
+    } catch(e) {}
   }
+
   return verifiedStreams;
 }
 
@@ -276,7 +181,7 @@ async function getMediaInfo(rawId, mediaType) {
     try {
       var endpoint = isSeries ? "tv" : "movie";
       var url = "https://www.themoviedb.org/" + endpoint + "/" + id;
-      var html = await fetchHtml(url, null, 3000);
+      var html = await fetchHtml(url, null);
       if (html) {
         var og = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
         if (og && og[1]) {

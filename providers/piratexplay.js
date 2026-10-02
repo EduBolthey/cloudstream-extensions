@@ -1,6 +1,6 @@
-// PirateXPlay Nuvio Enhanced Provider v1.0.9
+// PirateXPlay Nuvio Enhanced Provider v1.1.0
 // Direct HLS (.m3u8) extractor - pure QuickJS compatible (no setTimeout/clearTimeout)
-// Uses direct native streams without proxy headers so ExoPlayer plays immediately without buffering
+// Resolves direct single-variant streams (720p, 480p) + sets type: 'hls' for immediate ExoPlayer playback
 
 var BASE_URL = "https://piratexplay.cc";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -67,9 +67,38 @@ function unpackP(p, a, c, k) {
   return p;
 }
 
-async function extractVidmoly(embedUrl, referer) {
+async function extractVidmolyVariants(embedUrl, referer) {
   var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
-  return extractPlayerUrl(html);
+  var masterUrl = extractPlayerUrl(html);
+  if (!masterUrl) return [];
+
+  var variants = [];
+  try {
+    var masterContent = await fetchHtml(masterUrl, referer);
+    if (masterContent && masterContent.includes("#EXTM3U")) {
+      var lines = masterContent.split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith("#EXT-X-STREAM-INF")) {
+          var resM = line.match(/RESOLUTION=(\d+x\d+)/i);
+          var nextLine = (lines[i + 1] || "").trim();
+          if (nextLine.startsWith("http")) {
+            var qual = resM ? (resM[1].split("x")[1] + "p") : "720p";
+            variants.push({ url: nextLine, quality: qual });
+          }
+        }
+      }
+    }
+  } catch(e) {}
+
+  // If sub-variants were resolved, add master playlist as adaptive option too
+  if (variants.length > 0) {
+    variants.push({ url: masterUrl, quality: "Auto" });
+  } else {
+    variants.push({ url: masterUrl, quality: "720p" });
+  }
+
+  return variants;
 }
 
 async function extractFilelions(embedUrl, referer) {
@@ -90,13 +119,14 @@ async function extractFilelions(embedUrl, referer) {
   return extractPlayerUrl(html);
 }
 
-// Direct stream object without custom headers - allows ExoPlayer/Media3 to stream without TLS drops
+// Direct stream object without custom headers - includes type: "hls" for ExoPlayer
 function createStreamObj(name, title, streamUrl, quality) {
   return {
     name: name || "PirateXPlay",
     title: title || ("PirateXPlay " + (quality || "720p")),
     url: streamUrl,
     quality: quality || "720p",
+    type: "hls",
     provider: "piratexplay"
   };
 }
@@ -152,7 +182,6 @@ async function extractStreams(epUrl, displayTitle) {
     var optId = div[1];
     var divHtml = div[2];
     var meta = serverMap[optId] || { num: optId, label: "Server " + (parseInt(optId) + 1) };
-    var sname = "PirateXPlay [Server " + meta.num + "] " + meta.label;
 
     var srcM = divHtml.match(/\biframe\b[^>]+\bsrc=["']([^"']+)["']/i)
             || divHtml.match(/\biframe\b[^>]+\bdata-src=["']([^"']+)["']/i);
@@ -166,16 +195,19 @@ async function extractStreams(epUrl, displayTitle) {
 
     try {
       if (iurl.includes("vidmoly.")) {
-        var vm3u8 = await extractVidmoly(iurl, epUrl);
-        if (vm3u8 && (vm3u8.includes(".m3u8") || vm3u8.includes(".mp4"))) {
-          verifiedStreams.push(createStreamObj(sname, displayTitle, vm3u8, "720p"));
-          if (verifiedStreams.length >= 2) break;
+        var vars = await extractVidmolyVariants(iurl, epUrl);
+        for (var v = 0; v < vars.length; v++) {
+          var item = vars[v];
+          var streamName = "PirateXPlay [Server " + meta.num + "] " + item.quality;
+          verifiedStreams.push(createStreamObj(streamName, displayTitle, item.url, item.quality));
         }
+        if (verifiedStreams.length >= 3) break;
       } else if (iurl.includes("filelions.") || iurl.includes("fdewsdc.")) {
         var flm3u8 = await extractFilelions(iurl, epUrl);
         if (flm3u8 && (flm3u8.includes(".m3u8") || flm3u8.includes(".mp4"))) {
+          var sname = "PirateXPlay [Server " + meta.num + "] " + meta.label;
           verifiedStreams.push(createStreamObj(sname, displayTitle, flm3u8, "720p"));
-          if (verifiedStreams.length >= 2) break;
+          if (verifiedStreams.length >= 3) break;
         }
       }
     } catch(e) {}

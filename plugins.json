@@ -1,0 +1,70 @@
+[
+    {
+        "iconUrl": "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/4KHDHUB-Bright-Logo.png",
+        "fileHash": "sha256-db1646a7d68808ac8b36fe7de0ba77e8b32609d540a43b27d7b7d92c58a34e44",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/EduBolthey/cloudstream-extensions",
+        "fileSize": 65367,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Custom",
+            "Phisher98"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 21,
+        "internalName": "FourKHDHub",
+        "description": "4K Movies Extension by HDHUB4U",
+        "url": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/builds/FourKHDHub.cs3",
+        "name": "FourKHDHub"
+    },
+    {
+        "iconUrl": "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/HDHUB.png",
+        "fileHash": "sha256-0d67b8682ed7bfe7564dd19c5885c9f3888cdd4f8b889010640253489bcde3dc",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/EduBolthey/cloudstream-extensions",
+        "fileSize": 66227,
+        "status": 1,
+        "language": "hi",
+        "authors": [
+            "Custom",
+            "Phisher98"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "version": 38,
+        "internalName": "HDhub4u",
+        "description": "HDhub4u - Bollywood, Hollywood & Dubbed Movies",
+        "url": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/builds/HDhub4u.cs3",
+        "name": "HDhub4u"
+    },
+    {
+        "iconUrl": "https://piratexplay.cc/favicon.ico",
+        "fileHash": "sha256-b7ade43e27b3664cdcc342233736fea1a5c1408aa1abfcfc3e69425ed6d50024",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/EduBolthey/cloudstream-extensions",
+        "fileSize": 21949,
+        "status": 1,
+        "language": "hi",
+        "authors": [
+            "Custom"
+        ],
+        "tvTypes": [
+            "Anime",
+            "Movie",
+            "TvSeries",
+            "Cartoon"
+        ],
+        "version": 1,
+        "internalName": "Piratexplay",
+        "description": "PirateXPlay - Multi-Language Anime & Cartoon Streaming",
+        "url": "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/builds/Piratexplay.cs3",
+        "name": "Piratexplay"
+    }
+]

@@ -1,0 +1,8 @@
+{
+  "name": "Custom CloudStream Extensions",
+  "description": "Custom extensions for PirateXPlay, HDHub4u, and 4KHDHub",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/EduBolthey/cloudstream-extensions/builds/plugins.json"
+  ]
+}

@@ -1,4 +1,4 @@
-// PirateXPlay Nuvio Enhanced Provider v1.1.0
+// PirateXPlay Nuvio Enhanced Provider v1.1.1
 // Direct HLS (.m3u8) extractor - pure QuickJS compatible (no setTimeout/clearTimeout)
 // Resolves direct single-variant streams (720p, 480p) + sets type: 'hls' for immediate ExoPlayer playback
 

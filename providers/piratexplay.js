@@ -1,6 +1,6 @@
-// PirateXPlay Nuvio Enhanced Provider v1.0.5
-// Only extracts verified, working direct HLS (.m3u8) / video streams.
-// Dead domains, shorteners (short.icu), broken embeds, and webpage fallbacks are excluded.
+// PirateXPlay Nuvio Enhanced Provider v1.0.6
+// Maximum compatibility with Android WebView, React Native Hermes, Node.js, and QuickJS.
+// Supports Cinemeta IMDb IDs (tt...), TMDB IDs, Stremio colon-IDs (tt...:1:1), and object args.
 
 var BASE_URL = "https://piratexplay.cc";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -9,6 +9,21 @@ var HEADERS = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Referer": BASE_URL + "/"
 };
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+
+// ── Compatibility Helper: regex match all without ES2020 matchAll ───────────
+function matchAllRegex(str, regex) {
+  var results = [];
+  if (!str) return results;
+  var flags = regex.flags || "";
+  if (flags.indexOf("g") === -1) flags += "g";
+  var r = new RegExp(regex.source, flags);
+  var m;
+  while ((m = r.exec(str)) !== null) {
+    results.push(m);
+  }
+  return results;
+}
 
 function base64Decode(str) {
   try {
@@ -19,22 +34,31 @@ function base64Decode(str) {
 }
 
 async function fetchHtml(url, referer, timeoutMs) {
-  timeoutMs = timeoutMs || 5000;
-  try {
-    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var timer = controller ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
-    var opts = {
-      headers: Object.assign({}, HEADERS, referer ? { "Referer": referer } : {}),
-      redirect: "follow"
-    };
-    if (controller) opts.signal = controller.signal;
-    var res = await fetch(url, opts);
-    if (timer) clearTimeout(timer);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch(e) {
-    return null;
-  }
+  timeoutMs = timeoutMs || 3500;
+  return new Promise(function(resolve) {
+    var timer = setTimeout(function() {
+      resolve(null);
+    }, timeoutMs);
+    try {
+      var opts = {
+        headers: Object.assign({}, HEADERS, referer ? { "Referer": referer } : {}),
+        redirect: "follow"
+      };
+      fetch(url, opts).then(function(res) {
+        clearTimeout(timer);
+        if (!res.ok) return resolve(null);
+        return res.text().then(function(text) {
+          resolve(text);
+        }).catch(function() { resolve(null); });
+      }).catch(function() {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    } catch(e) {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
 }
 
 // ── Extract direct .m3u8 or .mp4 URL from a page ──────────────────────────
@@ -61,87 +85,23 @@ function extractPlayerUrl(html) {
 
 // ── Extract Vidmoly embed → gets signed master.m3u8 directly from page ─────
 async function extractVidmoly(embedUrl, referer) {
-  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/", 4000);
+  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
   return extractPlayerUrl(html);
 }
 
 // ── Extract Vexal / As-cdn26 embed → m3u8 ─────────────────────────────────
 async function extractVexal(embedUrl, referer) {
-  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/", 4000);
+  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
   return extractPlayerUrl(html);
 }
 
 // ── Extract Animedekho embed → finds inner iframe → m3u8 ─────────────────
 async function extractAnimedekho(embedUrl) {
-  var html = await fetchHtml(embedUrl, BASE_URL + "/", 4000);
+  var html = await fetchHtml(embedUrl, BASE_URL + "/");
   if (!html) return null;
   var m = html.match(/<iframe[^>]+src=["'](https?:\/\/(?:vexal\.top|as-cdn26\.top)[^"']+)["']/i);
   if (!m) return null;
   return await extractVexal(m[1], embedUrl);
-}
-
-// ── Extract from index11.php internal player ──────────────────────────────
-async function extractIndex11(proxyUrl, displayTitle) {
-  var html = await fetchHtml(proxyUrl, BASE_URL + "/", 4000);
-  if (!html) return [];
-  var streams = [];
-  var primary = html.match(/<iframe[^>]+id=["']playerFrame["'][^>]+src=["']([^"']+)["']/i);
-  if (primary) {
-    var pUrl = primary[1];
-    var m3u8 = await extractVexal(pUrl, proxyUrl);
-    if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
-      streams.push(createStreamObj("PirateXPlay [HD] FM", displayTitle, m3u8, proxyUrl));
-    }
-  }
-  var opts = [...html.matchAll(/data-link=["']([^"']+)["'][^>]*data-language=["']([^"']+)["']/gi)];
-  for (var o of opts) {
-    var link = o[1]; var lang = o[2] || "HD";
-    if (!link || link === (primary && primary[1])) continue;
-    var optM3u8 = link.includes("vidmoly.") ? await extractVidmoly(link, proxyUrl) : await extractVexal(link, proxyUrl);
-    if (optM3u8 && (optM3u8.includes(".m3u8") || optM3u8.includes(".mp4"))) {
-      streams.push(createStreamObj("PirateXPlay [HD] " + lang, displayTitle, optM3u8, proxyUrl));
-    }
-  }
-  return streams;
-}
-
-// ── Resolve multi.php (base64 JSON of language links) ─────────────────────
-async function extractMulti(iframeUrl, referer, displayTitle) {
-  var parts = iframeUrl.split("multi.php?data=");
-  if (parts.length < 2) return [];
-  var b64 = parts[1].split("&")[0];
-  var decoded = base64Decode(b64);
-  if (!decoded) return [];
-  var parsed;
-  try { parsed = JSON.parse(decoded); } catch(e) { return []; }
-  if (!Array.isArray(parsed)) return [];
-
-  var streams = [];
-  for (var item of parsed) {
-    if (!item.link) continue;
-    var lang = item.language || "Multi";
-    var link = item.link;
-    try {
-      var r = await fetch(link, {
-        headers: HEADERS,
-        redirect: "follow",
-        signal: typeof AbortSignal !== "undefined" ? AbortSignal.timeout(3000) : void 0
-      });
-      var finalUrl = r.url;
-      if (finalUrl.includes("vidmoly.")) {
-        var m3u8 = await extractVidmoly(finalUrl, referer);
-        if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
-          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, m3u8, "https://vidmoly.biz/"));
-        }
-      } else if (finalUrl.includes("vexal.top") || finalUrl.includes("as-cdn26.top")) {
-        var vM3u8 = await extractVexal(finalUrl, referer);
-        if (vM3u8 && (vM3u8.includes(".m3u8") || vM3u8.includes(".mp4"))) {
-          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, vM3u8, finalUrl));
-        }
-      }
-    } catch(e) {}
-  }
-  return streams;
 }
 
 // ── Stream object factory (compatible with Nuvio Enhanced & Stremio) ───────
@@ -166,6 +126,67 @@ function createStreamObj(name, title, streamUrl, referer) {
   };
 }
 
+// ── Extract from index11.php internal player ──────────────────────────────
+async function extractIndex11(proxyUrl, displayTitle) {
+  var html = await fetchHtml(proxyUrl, BASE_URL + "/");
+  if (!html) return [];
+  var streams = [];
+  var primary = html.match(/<iframe[^>]+id=["']playerFrame["'][^>]+src=["']([^"']+)["']/i);
+  if (primary) {
+    var pUrl = primary[1];
+    var m3u8 = await extractVexal(pUrl, proxyUrl);
+    if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
+      streams.push(createStreamObj("PirateXPlay [HD] FM", displayTitle, m3u8, proxyUrl));
+    }
+  }
+  var opts = matchAllRegex(html, /data-link=["']([^"']+)["'][^>]*data-language=["']([^"']+)["']/gi);
+  for (var i = 0; i < opts.length; i++) {
+    var link = opts[i][1]; var lang = opts[i][2] || "HD";
+    if (!link || link === (primary && primary[1])) continue;
+    var optM3u8 = link.includes("vidmoly.") ? await extractVidmoly(link, proxyUrl) : await extractVexal(link, proxyUrl);
+    if (optM3u8 && (optM3u8.includes(".m3u8") || optM3u8.includes(".mp4"))) {
+      streams.push(createStreamObj("PirateXPlay [HD] " + lang, displayTitle, optM3u8, proxyUrl));
+    }
+  }
+  return streams;
+}
+
+// ── Resolve multi.php (base64 JSON of language links) ─────────────────────
+async function extractMulti(iframeUrl, referer, displayTitle) {
+  var parts = iframeUrl.split("multi.php?data=");
+  if (parts.length < 2) return [];
+  var b64 = parts[1].split("&")[0];
+  var decoded = base64Decode(b64);
+  if (!decoded) return [];
+  var parsed;
+  try { parsed = JSON.parse(decoded); } catch(e) { return []; }
+  if (!Array.isArray(parsed)) return [];
+
+  var streams = [];
+  for (var i = 0; i < parsed.length; i++) {
+    var item = parsed[i];
+    if (!item || !item.link) continue;
+    var lang = item.language || "Multi";
+    var link = item.link;
+    try {
+      var r = await fetch(link, { headers: HEADERS, redirect: "follow" });
+      var finalUrl = r.url;
+      if (finalUrl.includes("vidmoly.")) {
+        var m3u8 = await extractVidmoly(finalUrl, referer);
+        if (m3u8 && (m3u8.includes(".m3u8") || m3u8.includes(".mp4"))) {
+          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, m3u8, "https://vidmoly.biz/"));
+        }
+      } else if (finalUrl.includes("vexal.top") || finalUrl.includes("as-cdn26.top")) {
+        var vM3u8 = await extractVexal(finalUrl, referer);
+        if (vM3u8 && (vM3u8.includes(".m3u8") || vM3u8.includes(".mp4"))) {
+          streams.push(createStreamObj("PirateXPlay [Multi Audio] " + lang, displayTitle, vM3u8, finalUrl));
+        }
+      }
+    } catch(e) {}
+  }
+  return streams;
+}
+
 // ── Process a single server option container ──────────────────────────────
 async function processServerDiv(div, serverMap, epUrl, displayTitle) {
   var optId = div[1];
@@ -183,17 +204,12 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
 
   var streams = [];
   try {
-    // 1. multi.php proxy
     if (iurl.includes("multi.php?data=")) {
       return await extractMulti(iurl, epUrl, displayTitle);
     }
-
-    // 2. index11.php internal proxy
     if (iurl.includes("/public/player/")) {
       return await extractIndex11(iurl, displayTitle);
     }
-
-    // 3. Vidmoly embed
     if (iurl.includes("vidmoly.")) {
       var vm3u8 = await extractVidmoly(iurl, epUrl);
       if (vm3u8 && (vm3u8.includes(".m3u8") || vm3u8.includes(".mp4"))) {
@@ -201,8 +217,6 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
         return streams;
       }
     }
-
-    // 4. Animedekho embed
     if (iurl.includes("animedekho.piratexplay.com")) {
       var am3u8 = await extractAnimedekho(iurl);
       if (am3u8 && (am3u8.includes(".m3u8") || am3u8.includes(".mp4"))) {
@@ -210,8 +224,6 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
         return streams;
       }
     }
-
-    // 5. Vexal / As-cdn26
     if (iurl.includes("vexal.top") || iurl.includes("as-cdn26.top")) {
       var xm3u8 = await extractVexal(iurl, epUrl);
       if (xm3u8 && (xm3u8.includes(".m3u8") || xm3u8.includes(".mp4"))) {
@@ -219,31 +231,26 @@ async function processServerDiv(div, serverMap, epUrl, displayTitle) {
         return streams;
       }
     }
-
-    // 6. Generic player extract (only if direct m3u8/mp4 found)
-    var genHtml = await fetchHtml(iurl, epUrl, 3000);
+    var genHtml = await fetchHtml(iurl, epUrl);
     var genM3u8 = extractPlayerUrl(genHtml);
     if (genM3u8 && (genM3u8.includes(".m3u8") || genM3u8.includes(".mp4"))) {
       streams.push(createStreamObj(sname, displayTitle, genM3u8, iurl));
       return streams;
     }
-  } catch(e) {
-    // Skip failed servers silently
-  }
+  } catch(e) {}
 
-  // NOTE: If no playable direct stream was found, return [] (never return raw iframe/webpage URL)
   return streams;
 }
 
 // ── Main stream extraction from episode page ───────────────────────────────
 async function extractStreams(epUrl, displayTitle) {
-  var html = await fetchHtml(epUrl, null, 5000);
+  var html = await fetchHtml(epUrl, null);
   if (!html) return [];
 
-  // Server button labels
   var serverMap = {};
-  var btnMatches = [...html.matchAll(/<a[^>]+href=["']#options-(\d+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
-  for (var b of btnMatches) {
+  var btnMatches = matchAllRegex(html, /<a[^>]+href=["']#options-(\d+)["'][^>]*>([\s\S]*?)<\/a>/gi);
+  for (var i = 0; i < btnMatches.length; i++) {
+    var b = btnMatches[i];
     var numM = b[2].match(/Server\s*<span>(\d+)<\/span>/i);
     var labelM = b[2].match(/<span class="server">([^<]+)<\/span>/i);
     serverMap[b[1]] = {
@@ -252,33 +259,77 @@ async function extractStreams(epUrl, displayTitle) {
     };
   }
 
-  // Player divs
-  var divMatches = [...html.matchAll(/<div\s+id="options-(\d+)"[^>]*class="video\s+aa-tb[^"]*"[^>]*>([\s\S]*?)<\/div>/gi)];
+  var divMatches = matchAllRegex(html, /<div\s+id="options-(\d+)"[^>]*class="video\s+aa-tb[^"]*"[^>]*>([\s\S]*?)<\/div>/gi);
 
-  // Process all servers in parallel
+  // Parallel execution safe across all JS runtimes
   var tasks = divMatches.map(function(div) {
-    return processServerDiv(div, serverMap, epUrl, displayTitle);
+    return processServerDiv(div, serverMap, epUrl, displayTitle).catch(function() { return []; });
   });
-  var results = await Promise.allSettled(tasks);
+  var results = await Promise.all(tasks);
 
   var verifiedStreams = [];
-  for (var r of results) {
-    if (r.status === "fulfilled" && Array.isArray(r.value)) {
-      verifiedStreams.push(...r.value);
+  for (var j = 0; j < results.length; j++) {
+    if (Array.isArray(results[j])) {
+      for (var k = 0; k < results[j].length; k++) {
+        verifiedStreams.push(results[j][k]);
+      }
     }
   }
 
   return verifiedStreams;
 }
 
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+function cleanWordList(str) {
+  return str.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(function(w) {
+    return w.length > 0 && w !== "the" && w !== "a" && w !== "an" && w !== "season";
+  });
+}
 
-// ── Media info ──────────────────────────────────────────────────────────────
-async function getMediaInfo(id, mediaType) {
+function scoreSlugMatch(slug, searchWords) {
+  var slugWords = slug.toLowerCase().split(/[-_]/);
+  var matches = 0;
+  for (var i = 0; i < searchWords.length; i++) {
+    if (slugWords.indexOf(searchWords[i]) !== -1) matches++;
+  }
+  return matches / Math.max(searchWords.length, 1);
+}
+
+// ── Media info resolver (Cinemeta + TMDB fallback) ─────────────────────────
+async function getMediaInfo(rawId, mediaType) {
+  var id = String(rawId || "").split(":")[0].trim();
   var isSeries = mediaType === "tv" || mediaType === "series";
 
-  // 1. Numeric TMDB ID
-  if (/^\d+$/.test(String(id))) {
+  // 1. Cinemeta lookup for IMDb IDs (tt...)
+  if (id.startsWith("tt")) {
+    try {
+      var ctype = isSeries ? "series" : "movie";
+      var cres = await fetch("https://v3-cinemeta.strem.io/meta/" + ctype + "/" + id + ".json");
+      if (cres.ok) {
+        var cd = await cres.json();
+        if (cd && cd.meta && cd.meta.name) {
+          var year = String(cd.meta.year || "").slice(0, 4);
+          return { title: cd.meta.name, year: year, id: id };
+        }
+      }
+    } catch(e) {}
+
+    // TVMaze fallback for TV shows
+    if (isSeries) {
+      try {
+        var mres = await fetch("https://api.tvmaze.com/lookup/shows?imdb=" + id);
+        if (mres.ok) {
+          var md = await mres.json();
+          if (md && md.name) {
+            var myear = String(md.premiered || "").slice(0, 4);
+            return { title: md.name, year: myear, id: id };
+          }
+        }
+      } catch(e) {}
+    }
+  }
+
+  // 2. TMDB API lookup for numeric IDs
+  if (/^\d+$/.test(id)) {
     try {
       var endpoint = isSeries ? "tv" : "movie";
       var res = await fetch("https://api.themoviedb.org/3/" + endpoint + "/" + id + "?api_key=" + TMDB_API_KEY);
@@ -291,140 +342,116 @@ async function getMediaInfo(id, mediaType) {
     } catch(e) {}
   }
 
-  // 2. IMDb ID (tt...)
-  if (typeof id === "string" && id.startsWith("tt")) {
-    try {
-      var res = await fetch("https://api.themoviedb.org/3/find/" + id + "?api_key=" + TMDB_API_KEY + "&external_source=imdb_id");
-      if (res.ok) {
-        var d = await res.json();
-        var results = isSeries ? d.tv_results : d.movie_results;
-        if (results && results.length > 0) {
-          var item = results[0];
-          var title = item.name || item.title || "";
-          var year = String(item.first_air_date || item.release_date || "").slice(0, 4);
-          if (title) return { title: title, year: year, id: item.id || id };
-        }
-      }
-    } catch(e) {}
-
-    // Fallback to Cinemeta
-    try {
-      var type = isSeries ? "series" : "movie";
-      var res = await fetch("https://v3-cinemeta.strem.io/meta/" + type + "/" + id + ".json");
-      if (res.ok) {
-        var d = await res.json();
-        if (d && d.meta) return { title: d.meta.name || "", year: String(d.meta.year || "").replace(/[^0-9]/g, ""), id: id };
-      }
-    } catch(e) {}
-  }
-
-  return { title: String(id), year: "", id: id };
+  return { title: id, year: "", id: id };
 }
 
 // ── Find episode page URL ──────────────────────────────────────────────────
 async function findEpisodeUrl(id, mediaType, info, sNum, eNum) {
-  var targetUrl = null;
+  // 1. If numeric TMDB ID, search directly on site
+  if (/^\d+$/.test(String(info.id))) {
+    var searchHtml = await fetchHtml(BASE_URL + "/?s=" + info.id);
+    if (searchHtml) {
+      var sPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/series\\/[^"\']*-season-' + sNum + '[^"\']*-' + info.id + '\\/?)["\']', "i");
+      var sm = searchHtml.match(sPat);
+      if (sm) {
+        var slug = sm[1].replace(/\/$/, "").split("/").pop();
+        return BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum + "/";
+      }
+    }
+  }
 
-  // Search by TMDB/IMDb id number
-  if (/^\d+$/.test(String(id))) {
-    var html = await fetchHtml(BASE_URL + "/?s=" + id, null, 5000);
-    if (html) {
-      if (mediaType === "tv") {
-        // Try specific season first
-        var sPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/series\\/[^"\']*-season-' + sNum + '[^"\']*-' + id + '\\/?)["\']', "i");
-        var sm = html.match(sPat);
-        if (sm) targetUrl = BASE_URL + sm[1];
-        if (!targetUrl) {
-          var genPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/series\\/[^"\']*-' + id + '\\/?)["\']', "i");
-          var gm = html.match(genPat);
-          if (gm) targetUrl = BASE_URL + gm[1];
+  // 2. Search by title
+  var searchTitle = info.title && info.title !== info.id ? info.title : String(id);
+  var clean = searchTitle.replace(/[:!?_]/g, " ").replace(/\s+/g, " ").trim();
+  var searchHtml2 = await fetchHtml(BASE_URL + "/?s=" + encodeURIComponent(clean));
+  if (searchHtml2) {
+    var matches = matchAllRegex(searchHtml2, /href=["'](https?:\/\/piratexplay\.cc)?(\/(?:series|movies)\/[^"']+\/?)["']/gi);
+    var unique = [];
+    for (var i = 0; i < matches.length; i++) {
+      var u = matches[i][2];
+      if (unique.indexOf(u) === -1) unique.push(u);
+    }
+
+    if (unique.length > 0) {
+      var searchWords = cleanWordList(searchTitle);
+      var best = null;
+      var bestScore = -1;
+      for (var j = 0; j < unique.length; j++) {
+        var slugCandidate = unique[j].replace(/\/$/, "").split("/").pop();
+        var score = scoreSlugMatch(slugCandidate, searchWords);
+        if (score > bestScore) {
+          bestScore = score;
+          best = unique[j];
         }
-      } else {
-        var movPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/movies\\/[^"\']*-' + id + '\\/?)["\']', "i");
-        var mm = html.match(movPat);
-        if (mm) targetUrl = BASE_URL + mm[1];
+      }
+
+      if (best && bestScore >= 0.25) {
+        if (mediaType === "movie") return BASE_URL + best;
+        var baseSlug = best.replace(/\/$/, "").split("/").pop();
+        var adjSlug = baseSlug.replace(/season-\d+/i, "season-" + sNum);
+        return BASE_URL + "/episode/" + adjSlug + "-" + sNum + "x" + eNum + "/";
       }
     }
   }
 
-  // Search by title
-  if (!targetUrl && info.title && info.title !== String(id)) {
-    var clean = info.title.replace(/[:!?_]/g, " ").replace(/\s+/g, " ").trim();
-    var html = await fetchHtml(BASE_URL + "/?s=" + encodeURIComponent(clean), null, 5000);
-    if (html) {
-      var links = [...html.matchAll(/href=["'](https?:\/\/piratexplay\.cc)?(\/(?:series|movies)\/[^"']+\/?)['"]/gi)];
-      if (links.length > 0) targetUrl = BASE_URL + links[0][2];
-    }
-  }
-
-  if (!targetUrl) return null;
-  if (mediaType === "movie") return targetUrl;
-
-  // Navigate to series page to find requested season & episode
-  var slug = targetUrl.replace(/\/$/, "").split("/").pop();
-  if (slug.includes("season-")) {
-    var adjSlug = slug.replace(/season-\d+/i, "season-" + sNum);
-    if (adjSlug !== slug) {
-      var adjUrl = BASE_URL + "/series/" + adjSlug + "/";
-      var adjHtml = await fetchHtml(adjUrl, null, 4000);
-      if (adjHtml) {
-        targetUrl = adjUrl;
-      }
-    }
-  }
-
-  var seriesHtml = await fetchHtml(targetUrl, null, 5000);
-  if (!seriesHtml) return null;
-
-  var slugPat = new RegExp('data-season=["\']' + sNum + '["\'][^>]*data-slug=["\']([^"\']+)["\']', "i");
-  var slugPat2 = new RegExp('data-slug=["\']([^"\']+)["\'][^>]*data-season=["\']' + sNum + '["\']', "i");
-  var slugM = seriesHtml.match(slugPat) || seriesHtml.match(slugPat2);
-  if (slugM) {
-    var seasonUrl = BASE_URL + "/series/" + slugM[1] + "/";
-    if (seasonUrl !== targetUrl) {
-      var sh = await fetchHtml(seasonUrl, null, 5000);
-      if (sh) seriesHtml = sh;
-    }
-  }
-
-  // Match episode link
-  var epPat = new RegExp('href=["\'](?:' + BASE_URL + ')?(\\/episode\\/[^"\']*-' + sNum + 'x' + eNum + '\\/?)["\']', "i");
-  var epM = seriesHtml.match(epPat);
-  if (epM) return BASE_URL + epM[1];
-
-  // Fallback slug pattern adjusted for season
-  var finalSlug = targetUrl.replace(/\/$/, "").split("/").pop().replace(/season-\d+/i, "season-" + sNum);
-  return BASE_URL + "/episode/" + finalSlug + "-" + sNum + "x" + eNum + "/";
+  return null;
 }
 
 // ── Main entry point ───────────────────────────────────────────────────────
 async function getStreams(id, mediaType, season, episode) {
+  // Support object arguments
+  if (typeof id === "object" && id !== null) {
+    var obj = id;
+    id = obj.id || obj.tmdbId || obj.imdbId;
+    mediaType = obj.type || obj.mediaType || mediaType;
+    if (obj.season !== undefined) season = obj.season;
+    if (obj.episode !== undefined) episode = obj.episode;
+  }
+
+  // Support colon IDs e.g. "tt1622696:1:1" or "31109:1:1"
+  if (typeof id === "string" && id.indexOf(":") !== -1) {
+    var parts = id.split(":");
+    id = parts[0];
+    if (season === undefined || season === null) season = parseInt(parts[1]);
+    if (episode === undefined || episode === null) episode = parseInt(parts[2]);
+  }
+
+  id = String(id || "").trim();
   mediaType = mediaType || "tv";
   var sNum = parseInt(season) || 1;
   var eNum = parseInt(episode) || 1;
-  console.log("[PX] id=" + id + " type=" + mediaType + " S" + sNum + "E" + eNum);
+
+  console.log("[PX] Query: id=" + id + " type=" + mediaType + " S" + sNum + "E" + eNum);
   try {
     var info = await getMediaInfo(id, mediaType);
-    console.log("[PX] title:", info.title);
-    var displayTitle = mediaType === "tv"
+    console.log("[PX] Resolved Info:", info.title, "(" + info.year + ")");
+
+    var displayTitle = mediaType === "tv" || mediaType === "series"
       ? (info.title + " S" + String(sNum).padStart(2, "0") + "E" + String(eNum).padStart(2, "0"))
       : info.title;
+
     var epUrl = await findEpisodeUrl(id, mediaType, info, sNum, eNum);
     if (!epUrl) {
-      console.log("[PX] No episode URL found");
+      console.log("[PX] No episode page found for:", info.title);
       return [];
     }
+
     console.log("[PX] Episode URL:", epUrl);
     var streams = await extractStreams(epUrl, displayTitle);
-    console.log("[PX] Total verified streams:", streams.length);
+    console.log("[PX] Verified Streams Found:", streams.length);
     return streams;
   } catch(e) {
-    console.error("[PX] Fatal error:", e.message);
+    console.error("[PX] Scraper error:", e.message);
     return [];
   }
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { getStreams };
+  module.exports = { getStreams: getStreams };
 }
-globalThis.getStreams = getStreams;
+if (typeof globalThis !== "undefined") {
+  globalThis.getStreams = getStreams;
+}
+if (typeof window !== "undefined") {
+  window.getStreams = getStreams;
+}

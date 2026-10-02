@@ -1,10 +1,11 @@
 package com.piratexplay
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.jsoup.nodes.Element
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 
 class PiratexplayProvider : MainAPI() {
@@ -47,8 +48,8 @@ class PiratexplayProvider : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst("header.entry-header h2.entry-title")?.text()?.trim() 
-            ?: this.selectFirst("h2.entry-title")?.text()?.trim() 
+        val title = this.selectFirst("header.entry-header h2.entry-title")?.text()?.trim()
+            ?: this.selectFirst("h2.entry-title")?.text()?.trim()
             ?: return null
 
         val href = fixUrlNull(this.selectFirst("a.lnk-blk")?.attr("href")) ?: return null
@@ -81,8 +82,8 @@ class PiratexplayProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.entry-title")?.text()?.trim() 
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content") 
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Unknown"
 
         val posterImg = document.selectFirst("article.post.single img")
@@ -106,14 +107,21 @@ class PiratexplayProvider : MainAPI() {
             }
         }
 
-        val seasons = document.select("div.season-swiper div.swiper-slide a.season-btn")
         val episodesList = mutableListOf<Episode>()
 
-        if (seasons.isNotEmpty()) {
-            for (seasonBtn in seasons) {
+        // Season buttons use data-slug to identify each season page
+        val seasonBtns = document.select("div.season-swiper div.swiper-slide a.season-btn")
+
+        if (seasonBtns.isNotEmpty()) {
+            for (seasonBtn in seasonBtns) {
                 val seasonNum = seasonBtn.attr("data-season").toIntOrNull() ?: 1
-                val seasonHref = fixUrlNull(seasonBtn.attr("href")) ?: continue
-                val seasonDoc = if (seasonHref == url) document else app.get(seasonHref).document
+                val slug = seasonBtn.attr("data-slug").trim()
+
+                val seasonDoc = try {
+                    app.get("$mainUrl/series/$slug/").document
+                } catch (e: Exception) {
+                    if (seasonNum == 1) document else null
+                } ?: continue
 
                 seasonDoc.select("ul#episode_by_temp li article.episodes").forEach { epArticle ->
                     val epHref = fixUrlNull(epArticle.selectFirst("a.lnk-blk")?.attr("href")) ?: return@forEach
@@ -125,7 +133,6 @@ class PiratexplayProvider : MainAPI() {
                         val src = img.attr("data-src")
                         fixUrlNull(if (src.isBlank()) img.attr("src") else src)
                     }
-
                     episodesList.add(
                         newEpisode(epHref) {
                             this.name = epTitle
@@ -136,13 +143,15 @@ class PiratexplayProvider : MainAPI() {
                     )
                 }
             }
-        } else {
+        }
+
+        // Fallback: episodes directly from current page
+        if (episodesList.isEmpty()) {
             document.select("ul#episode_by_temp li article.episodes").forEach { epArticle ->
                 val epHref = fixUrlNull(epArticle.selectFirst("a.lnk-blk")?.attr("href")) ?: return@forEach
                 val epCode = epArticle.selectFirst("span.num-epi")?.text()?.trim()
                 val epNum = epCode?.substringAfter("x")?.toIntOrNull()
                 val epTitle = epArticle.selectFirst("h2.entry-title")?.text()?.trim() ?: "Episode $epNum"
-
                 episodesList.add(
                     newEpisode(epHref) {
                         this.name = epTitle
@@ -160,82 +169,165 @@ class PiratexplayProvider : MainAPI() {
         }
     }
 
+    // ────────────────────────────────────────────────────────────────────────────
+    // loadLinks — extract every server; skip any that fail / produce no streams
+    // ────────────────────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
-        val iframes = document.select("section.player div.video iframe")
+        val document = app.get(data, referer = "$mainUrl/").document
+
+        // Server sidebar labels  →  <a href="#options-N"> … <span class="server">Name</span>
         val serverLabels = document.select("aside.video-options ul.aa-tbs-video li a")
 
-        iframes.forEachIndexed { index, iframe ->
-            val rawUrl = iframe.attr("src").ifBlank { iframe.attr("data-src") }
-            if (rawUrl.isBlank()) return@forEachIndexed
+        // Player divs  →  <div id="options-N" class="video aa-tb …"><iframe …></div>
+        // The FIRST div has its iframe src= set; all others use data-src= (lazy-loaded by JS)
+        val playerDivs = document.select("aside.video-player.aa-cn div.video.aa-tb")
 
-            val cleanUrl = fixUrl(rawUrl)
-            val serverName = serverLabels.getOrNull(index)?.selectFirst("span.server")?.text()?.trim() 
-                ?: "Server ${index + 1}"
+        coroutineScope {
+            playerDivs.mapIndexed { index, div ->
+                async {
+                    val iframe = div.selectFirst("iframe") ?: return@async
 
-            if (cleanUrl.contains("multi.php?data=")) {
-                val base64Data = cleanUrl.substringAfter("multi.php?data=")
-                try {
-                    val decodedJson = base64Decode(base64Data)
-                    val audioList = tryParseJson<List<MultiAudioItem>>(decodedJson)
-                    audioList?.forEach { item ->
-                        val langPrefix = "[${item.language}]"
-                        loadExtractor(
-                            url = item.link,
-                            referer = "$mainUrl/",
-                            subtitleCallback = subtitleCallback
-                        ) { link ->
-                            runBlocking {
-                                callback(
-                                    newExtractorLink(
-                                        source = link.source,
-                                        name = "$langPrefix ${link.name}",
-                                        url = link.url,
-                                        type = link.type
-                                    ) {
-                                        this.referer = link.referer
-                                        this.quality = link.quality
-                                        this.headers = link.headers
-                                        this.extractorData = link.extractorData
-                                    }
+                    // Read src (active) or data-src (lazy)
+                    val rawSrc = iframe.attr("src").trim().ifBlank { iframe.attr("data-src").trim() }
+                    if (rawSrc.isBlank()) return@async
+
+                    val divId = div.attr("id") // "options-0", "options-1", …
+                    val serverLabel = serverLabels.firstOrNull { btn ->
+                        btn.attr("href").trimStart('#') == divId
+                    }
+                    val serverNameRaw = serverLabel
+                        ?.selectFirst("span.server")?.text()?.trim()
+                        ?: "Server ${index + 1}"
+                    val serverName = "PirateXPlay [$serverNameRaw]"
+
+                    try {
+                        when {
+                            // ── Multi-audio proxy  (base64-encoded JSON of language links) ──
+                            rawSrc.contains("multi.php?data=") -> {
+                                val b64 = rawSrc.substringAfter("multi.php?data=").substringBefore("&")
+                                val decoded = base64Decode(b64)
+                                val audioList = tryParseJson<List<MultiAudioItem>>(decoded) ?: return@async
+                                audioList.forEach { item ->
+                                    if (item.link.isBlank()) return@forEach
+                                    // Resolve short URLs one hop deep
+                                    val resolvedUrl = resolveShortUrl(item.link) ?: item.link
+                                    tryLoadExtractor(
+                                        url = resolvedUrl,
+                                        name = "$serverName [${item.language}]",
+                                        referer = "$mainUrl/",
+                                        subtitleCallback = subtitleCallback,
+                                        callback = callback
+                                    )
+                                }
+                            }
+
+                            // ── Internal HD proxy player  (/public/player/index11.php?id=…) ──
+                            rawSrc.contains("/public/player/") -> {
+                                val innerDoc = app.get(rawSrc, referer = "$mainUrl/").document
+                                val primarySrc = innerDoc.selectFirst("iframe#playerFrame")?.attr("src")?.trim()
+                                if (!primarySrc.isNullOrBlank()) {
+                                    tryLoadExtractor(
+                                        url = primarySrc,
+                                        name = "$serverName [FM]",
+                                        referer = rawSrc,
+                                        subtitleCallback = subtitleCallback,
+                                        callback = callback
+                                    )
+                                }
+                                // Additional servers listed in the proxy modal
+                                innerDoc.select("div.server-option[data-link]").forEach { opt ->
+                                    val link = opt.attr("data-link").trim()
+                                    val lang = opt.attr("data-language").trim()
+                                    if (link.isBlank() || link == primarySrc) return@forEach
+                                    tryLoadExtractor(
+                                        url = link,
+                                        name = "$serverName [$lang]",
+                                        referer = rawSrc,
+                                        subtitleCallback = subtitleCallback,
+                                        callback = callback
+                                    )
+                                }
+                            }
+
+                            // ── Standard extractor (vidmoly, abyssplayer, gdmirrorbot, …) ──
+                            else -> {
+                                tryLoadExtractor(
+                                    url = fixUrl(rawSrc),
+                                    name = serverName,
+                                    referer = "$mainUrl/",
+                                    subtitleCallback = subtitleCallback,
+                                    callback = callback
                                 )
                             }
                         }
-                    }
-                } catch (e: Exception) {
-                    // Ignore decode failure
-                }
-            } else {
-                loadExtractor(
-                    url = cleanUrl,
-                    referer = "$mainUrl/",
-                    subtitleCallback = subtitleCallback
-                ) { link ->
-                    runBlocking {
-                        callback(
-                            newExtractorLink(
-                                source = link.source,
-                                name = "[$serverName] ${link.name}",
-                                url = link.url,
-                                type = link.type
-                            ) {
-                                this.referer = link.referer
-                                this.quality = link.quality
-                                this.headers = link.headers
-                                this.extractorData = link.extractorData
-                            }
-                        )
+                    } catch (_: Exception) {
+                        // Server failed — silently skip so it never appears in the stream list
                     }
                 }
-            }
+            }.forEach { it.await() }
         }
 
         return true
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Wraps loadExtractor in a try/catch and re-labels the stream with [name].
+     * Any extractor that throws or finds nothing is silently dropped.
+     */
+    private suspend fun tryLoadExtractor(
+        url: String,
+        name: String,
+        referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            loadExtractor(url = url, referer = referer, subtitleCallback = subtitleCallback) { link ->
+                runBlocking {
+                    callback(
+                        newExtractorLink(
+                            source = name,
+                            name = name,
+                            url = link.url,
+                            type = link.type
+                        ) {
+                            this.referer = link.referer
+                            this.quality = link.quality
+                            this.headers = link.headers
+                            this.extractorData = link.extractorData
+                        }
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            // Extractor failed — skip
+        }
+    }
+
+    /**
+     * Follows a short/redirect URL one or two hops to get the final destination URL.
+     * Returns null on error so the caller can fall back to the original link.
+     */
+    private suspend fun resolveShortUrl(url: String): String? {
+        return try {
+            val resp = app.get(url, allowRedirects = false, timeout = 10)
+            val loc1 = resp.headers["location"]?.takeIf { it.isNotBlank() } ?: return url
+            if (loc1 == url) return url
+            val resp2 = app.get(loc1, allowRedirects = false, timeout = 10)
+            val loc2 = resp2.headers["location"]?.takeIf { it.isNotBlank() }
+            loc2 ?: loc1
+        } catch (_: Exception) {
+            null
+        }
     }
 
     data class MultiAudioItem(

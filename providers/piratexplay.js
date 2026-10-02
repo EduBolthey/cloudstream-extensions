@@ -1,5 +1,6 @@
-// PirateXPlay Nuvio Enhanced Provider v1.0.8
-// Direct HLS (.m3u8) extractor - pure QuickJS compatible (no setTimeout/clearTimeout), skips dead/hanging domains
+// PirateXPlay Nuvio Enhanced Provider v1.0.9
+// Direct HLS (.m3u8) extractor - pure QuickJS compatible (no setTimeout/clearTimeout)
+// Uses direct native streams without proxy headers so ExoPlayer plays immediately without buffering
 
 var BASE_URL = "https://piratexplay.cc";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -57,27 +58,46 @@ function extractPlayerUrl(html) {
   return null;
 }
 
+function unpackP(p, a, c, k) {
+  while (c--) {
+    if (k[c]) {
+      p = p.replace(new RegExp('\\b' + c.toString(a) + '\\b', 'g'), k[c]);
+    }
+  }
+  return p;
+}
+
 async function extractVidmoly(embedUrl, referer) {
   var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
   return extractPlayerUrl(html);
 }
 
-function createStreamObj(name, title, streamUrl, referer) {
-  var streamHeaders = {
-    "User-Agent": UA,
-    "Referer": referer || "https://vidmoly.biz/"
-  };
+async function extractFilelions(embedUrl, referer) {
+  var html = await fetchHtml(embedUrl, referer || BASE_URL + "/");
+  if (!html) return null;
+  var packed = html.match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?return p\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)/);
+  if (packed) {
+    try {
+      var p = packed[1];
+      var a = parseInt(packed[2]);
+      var c = parseInt(packed[3]);
+      var k = packed[4].split('|');
+      var unpacked = unpackP(p, a, c, k);
+      var m = unpacked.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/);
+      if (m) return m[0];
+    } catch(e) {}
+  }
+  return extractPlayerUrl(html);
+}
+
+// Direct stream object without custom headers - allows ExoPlayer/Media3 to stream without TLS drops
+function createStreamObj(name, title, streamUrl, quality) {
   return {
     name: name || "PirateXPlay",
-    title: title || "PirateXPlay 1080p",
+    title: title || ("PirateXPlay " + (quality || "720p")),
     url: streamUrl,
-    quality: "1080p",
-    headers: streamHeaders,
-    behaviorHints: {
-      notWebReady: false,
-      proxyHeaders: { request: streamHeaders }
-    },
-    subtitles: []
+    quality: quality || "720p",
+    provider: "piratexplay"
   };
 }
 
@@ -117,11 +137,13 @@ async function extractStreams(epUrl, displayTitle) {
 
   var divMatches = matchAllRegex(html, /<div\s+id="options-(\d+)"[^>]*class="video\s+aa-tb[^"]*"[^>]*>([\s\S]*?)<\/div>/gi);
   
-  // Prioritize Vidmoly servers first
+  // Prioritize Vidmoly servers first, then Filelions
   divMatches.sort(function(a, b) {
-    var aHasVid = a[2].toLowerCase().indexOf("vidmoly") !== -1 ? 0 : 1;
-    var bHasVid = b[2].toLowerCase().indexOf("vidmoly") !== -1 ? 0 : 1;
-    return aHasVid - bHasVid;
+    var aText = a[2].toLowerCase();
+    var bText = b[2].toLowerCase();
+    var aScore = aText.indexOf("vidmoly") !== -1 ? 0 : (aText.indexOf("filelions") !== -1 ? 1 : 2);
+    var bScore = bText.indexOf("vidmoly") !== -1 ? 0 : (bText.indexOf("filelions") !== -1 ? 1 : 2);
+    return aScore - bScore;
   });
 
   var verifiedStreams = [];
@@ -146,7 +168,13 @@ async function extractStreams(epUrl, displayTitle) {
       if (iurl.includes("vidmoly.")) {
         var vm3u8 = await extractVidmoly(iurl, epUrl);
         if (vm3u8 && (vm3u8.includes(".m3u8") || vm3u8.includes(".mp4"))) {
-          verifiedStreams.push(createStreamObj(sname, displayTitle, vm3u8, "https://vidmoly.biz/"));
+          verifiedStreams.push(createStreamObj(sname, displayTitle, vm3u8, "720p"));
+          if (verifiedStreams.length >= 2) break;
+        }
+      } else if (iurl.includes("filelions.") || iurl.includes("fdewsdc.")) {
+        var flm3u8 = await extractFilelions(iurl, epUrl);
+        if (flm3u8 && (flm3u8.includes(".m3u8") || flm3u8.includes(".mp4"))) {
+          verifiedStreams.push(createStreamObj(sname, displayTitle, flm3u8, "720p"));
           if (verifiedStreams.length >= 2) break;
         }
       }
@@ -171,7 +199,7 @@ function scoreSlugMatch(slug, searchWords) {
   return matches / Math.max(searchWords.length, 1);
 }
 
-// ── Media info resolver (TMDB Website Scrape + TVMaze + Cinemeta) ──────────
+// ── Media info resolver (TMDB Website Scrape + IMDb Suggestions + TVMaze + Cinemeta) ──
 async function getMediaInfo(rawId, mediaType) {
   var id = String(rawId || "").split(":")[0].trim();
   var isSeries = mediaType === "tv" || mediaType === "series";
@@ -193,8 +221,18 @@ async function getMediaInfo(rawId, mediaType) {
     } catch(e) {}
   }
 
-  // 2. IMDb ID (tt...) -> TVMaze / Cinemeta
+  // 2. IMDb ID (tt...) -> IMDb Suggestion API / TVMaze / Cinemeta
   if (id.startsWith("tt")) {
+    try {
+      var imRes = await fetch("https://v3.sg.media-imdb.com/suggestion/x/" + id + ".json");
+      if (imRes.ok) {
+        var imData = await imRes.json();
+        if (imData && imData.d && imData.d.length > 0 && imData.d[0].l) {
+          return { title: imData.d[0].l, year: String(imData.d[0].y || ""), id: id };
+        }
+      }
+    } catch(e) {}
+
     if (isSeries) {
       try {
         var mres = await fetch("https://api.tvmaze.com/lookup/shows?imdb=" + id);
@@ -206,6 +244,7 @@ async function getMediaInfo(rawId, mediaType) {
         }
       } catch(e) {}
     }
+
     try {
       var ctype = isSeries ? "series" : "movie";
       var cres = await fetch("https://v3-cinemeta.strem.io/meta/" + ctype + "/" + id + ".json");
@@ -221,7 +260,7 @@ async function getMediaInfo(rawId, mediaType) {
   return { title: id, year: "", id: id };
 }
 
-// ── Find episode page URL ──────────────────────────────────────────────────
+// ── Find episode or movie page URL ─────────────────────────────────────────
 async function findEpisodeUrl(id, mediaType, info, sNum, eNum) {
   var isSeries = mediaType === "tv" || mediaType === "series";
 
